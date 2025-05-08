@@ -6,7 +6,7 @@ authors = [
     {name = "Marios Dallas",email = "mariosdallas2995@gmail.com"}
 ]
 readme = "README.md"
-requires-python = "^3.12"
+
 dependencies = [
     "torch (>=2.6.0,<3.0.0) ; python_version >= \"3.12\" and python_version < \"4.0\"",
     "torchvision (>=0.21.0,<0.22.0) ; python_version >= \"3.12\" and python_version < \"4.0\"",
@@ -30,6 +30,7 @@ requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.group.dev.dependencies]
+python = "^3.12"
 black = "^25.1.0"
 ruff = "^0.11.5"
 mypy = "^1.15.0"

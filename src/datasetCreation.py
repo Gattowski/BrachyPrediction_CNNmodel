@@ -1,6 +1,6 @@
 import os
 import numpy as np
-import ast
+
 
 input_folder = 'textFileData'
 output_folder = 'datasets'
