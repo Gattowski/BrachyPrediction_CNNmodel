@@ -1,0 +1,6 @@
+outs:
+- md5: 84e435473ce5a472c873f1b1cdaeff3f.dir
+  size: 1589169
+  nfiles: 40
+  hash: md5
+  path: textFileData
