@@ -62,13 +62,13 @@ def custom_loss(predictions, targets, obj_values):
     return weighted_loss.mean()
 
 # Absolute difference metrics
-def evaluate_absolute_difference(model, dataset):
+def evaluate_absolute_difference(model, dataset, eval_dataset):
     model.eval()
     print("\n--- Evaluation on last 10 samples ---")
     with torch.no_grad():
         abs_diffs = []
-        for i in range(len(dataset) - 10, len(dataset)):
-            sample = dataset[i]
+        for i in range(len(eval_dataset)):
+            sample = eval_dataset[i]
             input_tensor = sample['input'].unsqueeze(0)  # Add batch dimension
             true_output = sample['target']
             pred_output = model(input_tensor)[0]  # Remove batch dimension
@@ -77,7 +77,7 @@ def evaluate_absolute_difference(model, dataset):
             abs_diffs.append(abs_diff)
 
             mean_diff_per_axis = abs_diff.mean(dim=1)  # Mean over 624 per axis
-            print(f"Sample {i}: Mean Abs Diff - X: {mean_diff_per_axis[0]:.4f}, Y: {mean_diff_per_axis[1]:.4f}, Z: {mean_diff_per_axis[2]:.4f}")
+            print(f"Sample {i+1}: Mean Abs Diff - X: {mean_diff_per_axis[0]:.4f}, Y: {mean_diff_per_axis[1]:.4f}, Z: {mean_diff_per_axis[2]:.4f}")
 
         overall_diff = torch.stack(abs_diffs).mean(dim=[0, 2])  # Mean over samples and seeds
         print(f"\nOverall Mean Abs Difference - X: {overall_diff[0]:.4f}, Y: {overall_diff[1]:.4f}, Z: {overall_diff[2]:.4f}")
@@ -136,7 +136,7 @@ def main():
 
     # Load best model and evaluate
     model.load_state_dict(torch.load(model_path))
-    evaluate_absolute_difference(model, dataset)
+    evaluate_absolute_difference(model, dataset, eval_dataset)
 
 if __name__ == '__main__':
     main()
