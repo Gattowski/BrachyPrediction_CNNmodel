@@ -1,0 +1,34 @@
+# Core ML libraries
+torch
+torchvision
+torchaudio
+numpy
+scipy
+scikit-learn
+pandas
+
+# Visualization
+matplotlib
+seaborn
+
+# Development utilities
+tqdm
+jupyter
+notebook
+pillow
+h5py
+
+# Optimization & experimentation
+optuna
+
+# (Optional) Deployment tools
+flask
+fastapi
+uvicorn
+pydantic
+
+# (Optional) Dev tools
+black
+isort
+flake8
+pytest
