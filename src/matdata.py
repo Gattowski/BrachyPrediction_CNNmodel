@@ -49,7 +49,7 @@ def extract_and_save(mat_file, output_folder):
             npz_path = os.path.join(output_folder, npz_name)
 
             np.savez_compressed(npz_path, **sample_data)
-            print(f"✅ Saved: {npz_path}")
+            print(f"Saved: {npz_path}")
 
 # === Main ===
 mat_folder = "matfiles"
@@ -59,7 +59,7 @@ os.makedirs(output_folder, exist_ok=True)
 for filename in sorted(os.listdir(mat_folder)):
     if filename.endswith(".mat"):
         mat_path = os.path.join(mat_folder, filename)
-        print(f"\n🔄 Converting: {mat_path}")
+        print(f"\n Converting: {mat_path}")
         extract_and_save(mat_path, output_folder)
 
-print("\n✅ All done.")
+print("\nAll done.")

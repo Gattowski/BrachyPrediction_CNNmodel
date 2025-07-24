@@ -1,163 +1,170 @@
 import os
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-import numpy as np
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 
-FIXED_Z_VALUE = 58.8712
 
-# Dataset
-class SeedGridDataset(Dataset):
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+print(f"Using device: {DEVICE}")
+
+# === Dataset ===
+class SeedPositionDataset(Dataset):
     def __init__(self, folder_path):
         self.folder_path = folder_path
         self.files = sorted([f for f in os.listdir(folder_path) if f.endswith('.npz')])
-        self.seed_grid_positions = self._load_fixed_grid()
-
-    def _load_fixed_grid(self):
-        sample_path = os.path.join(self.folder_path, self.files[0])
-        data = np.load(sample_path)
-        return np.stack([
-            data['seedPosX'], 
-            data['seedPosY'], 
-            data['seedPosZ']
-        ], axis=1)  # shape (624, 3)
 
     def __len__(self):
         return len(self.files)
 
     def __getitem__(self, idx):
-        file_path = os.path.join(self.folder_path, self.files[idx])
-        data = np.load(file_path)
-        
-        templateX = data['templateX']
-        templateY = data['templateY']
-        fixedZ = np.full_like(templateX, FIXED_Z_VALUE)
+        data = np.load(os.path.join(self.folder_path, self.files[idx]))
+        mask = data['mask']  # shape (D, H, W)
+        prostate_binary = (mask > 0).astype(np.float32)
+        seedX, seedY, seedZ = data['seedPosX'], data['seedPosY'], data['seedPosZ']
+        obj_val = float(np.min(data['objFuncVal']))
 
-        input_vector = np.concatenate([templateX, templateY, fixedZ])  # shape (312,)
+        heatmap = np.zeros_like(mask, dtype=np.float32)
+        for x, y, z in zip(seedX, seedY, seedZ):
+            ix = int(round(float(np.squeeze(x))))
+            iy = int(round(float(np.squeeze(y))))
+            iz = int(round(float(np.squeeze(z))))
+            if 0 <= iz < heatmap.shape[0] and 0 <= iy < heatmap.shape[1] and 0 <= ix < heatmap.shape[2]:
+                heatmap[iz, iy, ix] = 1.0
 
-        seed_mask = ((data['seedPosX'] != 0) | 
-                     (data['seedPosY'] != 0) | 
-                     (data['seedPosZ'] != 0)).astype(np.float32)  # shape (624,)
-        
-        obj_value = data['objFunctionValue'].item()
+            # === CROP to make shape (88, 180, 180) ===
+            crop_d, crop_h, crop_w = 88, 180, 180
+            prostate_binary = prostate_binary[:crop_d, :crop_h, :crop_w]
+            heatmap = heatmap[:crop_d, :crop_h, :crop_w]
+
+            assert prostate_binary.shape == (88, 180, 180), f"Input shape mismatch: {prostate_binary.shape}"
+            assert heatmap.shape == (88, 180, 180), f"Target shape mismatch: {heatmap.shape}"
 
         return {
-            'input': torch.tensor(input_vector, dtype=torch.float32),
-            'target': torch.tensor(seed_mask, dtype=torch.float32),
-            'obj_value': torch.tensor(obj_value, dtype=torch.float32),
+        'input': torch.tensor(prostate_binary[None], dtype=torch.float32),  # shape (1, D, H, W)
+        'target': torch.tensor(heatmap[None], dtype=torch.float32),         # shape (1, D, H, W)
+        'obj_value': torch.tensor(obj_val, dtype=torch.float32),
+        'filename': self.files[idx]
         }
 
-# Model
-class SeedSelectorModel(nn.Module):
-    def __init__(self, input_size=312, output_size=624):
+# === Model ===
+class Simple3DCNN(nn.Module):
+    def __init__(self):
         super().__init__()
-        self.fc1 = nn.Linear(input_size, 128)
-        self.fc2 = nn.Linear(128, 64)
-        self.fc3 = nn.Linear(64, output_size)
-        self.sigmoid = nn.Sigmoid()
+        self.encoder = nn.Sequential(
+            nn.Conv3d(1, 8, 3, padding=1), nn.ReLU(),
+            nn.Conv3d(8, 16, 3, padding=1), nn.ReLU(),
+            nn.MaxPool3d(2),
+            nn.Conv3d(16, 32, 3, padding=1), nn.ReLU(),
+            nn.MaxPool3d(2),
+        )
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose3d(32, 16, kernel_size=2, stride=2), nn.ReLU(),
+            nn.ConvTranspose3d(16, 8, kernel_size=2, stride=2), nn.ReLU(),
+            nn.Conv3d(8, 1, 1)
+        )
 
     def forward(self, x):
-        x = torch.relu(self.fc1(x))
-        x = torch.relu(self.fc2(x))
-        return self.sigmoid(self.fc3(x))  # shape (batch, 624)
+        x = self.encoder(x)
+        x = self.decoder(x)
+        return x
 
-# Weighted BCE Loss
-def weighted_bce_loss(predictions, targets, obj_values):
-    loss_fn = nn.BCELoss(reduction='none')
-    losses = loss_fn(predictions, targets)  # shape (batch, 624)
-    weights = 1.0 / (obj_values.view(-1, 1) + 1e-8)
-    weighted_losses = losses * weights
-    return weighted_losses.mean()
+# === Loss ===
+criterion = nn.BCEWithLogitsLoss(reduction='none')
 
-# Visualize seeds in 3D
-def visualize_3d_seeds(seed_coords, mask, output_path):
+def custom_loss(pred, target, obj_val):
+    loss = criterion(pred, target)
+    weight = 1.0 / (obj_val.view(-1, 1, 1, 1, 1) + 1e-8)
+    return (loss * weight).mean()
+
+# === Post-processing ===
+def extract_grid_seeds(heatmap, threshold=0.5, spacing=2):
+    binary = (heatmap > threshold).astype(np.uint8)
+    coords = np.argwhere(binary > 0)
+    if len(coords) == 0:
+        return np.empty((0, 3))
+    grid = []
+    for pt in coords:
+        pt = tuple(pt)
+        if all(np.linalg.norm(np.array(pt) - np.array(g)) >= spacing for g in grid):
+            grid.append(pt)
+    return np.array(grid)[:, [2, 1, 0]]
+
+# === Save utilities ===
+def save_3d_plot(coords, title, path):
+    if coords.shape[0] == 0:
+        print(f"{title}: No seed coordinates to plot.")
+        return
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
-
-    active = mask > 0.5
-    ax.scatter(seed_coords[~active, 0], seed_coords[~active, 1], seed_coords[~active, 2], c='gray', alpha=0.2, label='Off Seeds')
-    ax.scatter(seed_coords[active, 0], seed_coords[active, 1], seed_coords[active, 2], c='red', label='On Seeds')
-
-    ax.set_xlabel("X")
-    ax.set_ylabel("Y")
-    ax.set_zlabel("Z")
-    ax.set_title("Predicted Active Seeds")
-    ax.legend()
-    plt.tight_layout()
-    plt.savefig(output_path)
+    ax.scatter(coords[:, 0], coords[:, 1], coords[:, 2], c='red')
+    ax.set_title(title)
+    plt.savefig(path)
     plt.close()
 
-# Save ON-seed coordinates
-def save_active_coords(seed_coords, mask, output_path):
-    active = mask > 0.5
-    active_coords = seed_coords[active]
-    np.savetxt(output_path, active_coords, fmt="%.6f", header="X Y Z", comments='')
+def save_coords(coords, path):
+    np.savetxt(path, coords, fmt='%.3f', header='X Y Z', comments='')
 
-# Evaluation function
-def evaluate(model, dataset, grid_positions, save_dir='./tests'):
+# === Evaluation ===
+def evaluate(model, dataloader, save_dir='./tests'):
     model.eval()
     os.makedirs(save_dir, exist_ok=True)
-
     with torch.no_grad():
-        for i in range(len(dataset)):
-            sample = dataset[i]
-            input_tensor = sample['input'].unsqueeze(0)
-            pred_mask = model(input_tensor)[0].cpu().numpy()
+        for batch in dataloader:
+            inputs = batch['input'].to(DEVICE)
+            filenames = batch['filename']
+            outputs = model(inputs)
+            preds = torch.sigmoid(outputs).cpu().squeeze(1).numpy()
 
-            # Save coordinates
-            coord_path = os.path.join(save_dir, f'seed_coords_{i+1:02d}.txt')
-            save_active_coords(grid_positions, pred_mask, coord_path)
+            for i in range(len(filenames)):
+                filename = filenames[i]
+                heatmap = preds[i]
+                coords = extract_grid_seeds(heatmap, threshold=0.5, spacing=2)
+                save_coords(coords, os.path.join(save_dir, f"{filename}_coords.txt"))
+                save_3d_plot(coords, filename, os.path.join(save_dir, f"{filename}_plot.png"))
 
-            # Save 3D visualization
-            fig_path = os.path.join(save_dir, f'seed_plot_{i+1:02d}.png')
-            visualize_3d_seeds(grid_positions, pred_mask, fig_path)
-
-            print(f"Sample {i+1}: saved coordinates + plot.")
-
-# Main
+# === Main ===
 def main():
-    folder = './datasets'
-    dataset = SeedGridDataset(folder)
-    grid_positions = dataset.seed_grid_positions
+    data_folder = './npz_data'
+    dataset = SeedPositionDataset(data_folder)
+    train_data = torch.utils.data.Subset(dataset, range(33))
+    test_data = torch.utils.data.Subset(dataset, range(34, 41))
 
-    train_dataset = torch.utils.data.Subset(dataset, list(range(40)))
-    eval_dataset = torch.utils.data.Subset(dataset, list(range(40, 50)))
+    train_loader = DataLoader(train_data, batch_size=4, shuffle=True, num_workers=4)
+    test_loader = DataLoader(test_data, batch_size=4, shuffle=False, num_workers=4)
 
-    train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
-
-    model = SeedSelectorModel()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    model = Simple3DCNN().to(DEVICE)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
     best_loss = float('inf')
-    best_state = None
-
     for epoch in range(50):
         model.train()
-        epoch_loss = 0
+        total_loss = 0
         for batch in train_loader:
+            inputs = batch['input'].to(DEVICE)
+            targets = batch['target'].to(DEVICE)
+            obj_vals = batch['obj_value'].to(DEVICE)
+
             optimizer.zero_grad()
-            outputs = model(batch['input'])
-            loss = weighted_bce_loss(outputs, batch['target'], batch['obj_value'])
+            outputs = model(inputs)
+            loss = custom_loss(outputs, targets, obj_vals)
             loss.backward()
             optimizer.step()
-            epoch_loss += loss.item()
-        avg_loss = epoch_loss / len(train_loader)
-        print(f"Epoch {epoch+1} Loss: {avg_loss:.4f}")
+
+            total_loss += loss.item()
+
+        avg_loss = total_loss / len(train_loader)
+        print(f"Epoch {epoch+1} - Avg Loss: {avg_loss:.4f}")
 
         if avg_loss < best_loss:
             best_loss = avg_loss
-            best_state = model.state_dict()
-            print(f"New best model at epoch {epoch+1}.")
+            torch.save(model.state_dict(), 'best_model.pth')
+            print(f"Saved best model at epoch {epoch+1}")
 
-    os.makedirs('models', exist_ok=True)
-    model_path = 'models/best_seed_selector.pth'
-    torch.save(best_state, model_path)
-    print(f"\nBest model saved to {model_path}")
-
-    model.load_state_dict(torch.load(model_path))
-    evaluate(model, eval_dataset, grid_positions)
+    print("Evaluating best model...")
+    model.load_state_dict(torch.load('best_model.pth'))
+    evaluate(model, test_loader)
 
 if __name__ == '__main__':
     main()
