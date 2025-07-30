@@ -4,7 +4,7 @@ import os
 
 def dereference_cell_array(h5file, cell_array_ref):
     result = []
-    refs = np.array(cell_array_ref).flatten()  # convert to ndarray and flatten
+    refs = np.array(cell_array_ref).flatten()
     for i, ref in enumerate(refs):
         if isinstance(ref, np.ndarray):
             ref = ref[0]
@@ -13,34 +13,38 @@ def dereference_cell_array(h5file, cell_array_ref):
         result.append(data)
     return result
 
-
 def extract_and_save(mat_file, output_folder):
     with h5py.File(mat_file, 'r') as f:
-        mask_all = np.array(f['allMasks']).astype(np.uint8)  # shape (N, 90, 183, 183)
-        
-        # Dereference all cell arrays
-        templateX = dereference_cell_array(f, f['templateX'])
-        templateY = dereference_cell_array(f, f['templateY'])
-        allObjFuncVals = dereference_cell_array(f, f['allObjFuncVals'])
-        seedX_list = dereference_cell_array(f, f['allSeedPointsX'])
-        seedY_list = dereference_cell_array(f, f['allSeedPointsY'])
-        seedZ_list = dereference_cell_array(f, f['allSeedPointsZ'])
+        mask_all = np.array(f['allMasks']).astype(np.uint8)         # (Z, Y, X, N)
+        seedmask_all = np.array(f['allSeedMasks']).astype(np.uint8) # (Z, Y, X, N)
 
-        total_samples = len(seedX_list)
+        # Attempt to dereference allObjFuncVals, may need adjustment if not cell array
+        allObjFuncVals = dereference_cell_array(f, f['allObjFuncVals'])
+        print(f"allObjFuncVals type: {type(allObjFuncVals)}")
+        if hasattr(allObjFuncVals, '__len__'):
+            print(f"allObjFuncVals length: {len(allObjFuncVals)}")
+        else:
+            print("allObjFuncVals has no length attribute")
+
+        total_samples = mask_all.shape[-1]
         print(f"Total samples to save: {total_samples}")
 
         for i in range(total_samples):
+            mask = mask_all[:, :, :, i]
+            seedmask = seedmask_all[:, :, :, i]
+
+            try:
+                objVal = allObjFuncVals[i]
+            except Exception as e:
+                print(f"Error accessing allObjFuncVals[{i}]: {e}")
+                objVal = None
+
             sample_data = {
-                'mask': mask_all[i],                      # ndarray (90,183,183)
-                'templateX': templateX[i].squeeze(),     # dereferenced ndarray or scalar
-                'templateY': templateY[i].squeeze(),
-                'objFuncVal': allObjFuncVals[i].squeeze(),
-                'seedPosX': seedX_list[i],
-                'seedPosY': seedY_list[i],
-                'seedPosZ': seedZ_list[i]
+                'mask': mask,             # input
+                'seedMask': seedmask,     # binary target output
+                'objFuncVal': objVal      # objective function value
             }
 
-            # Debug print of each sample component's type and shape
             for k, v in sample_data.items():
                 print(f"Sample {i+1} - {k}: type={type(v)}, shape={getattr(v, 'shape', None)}")
 
@@ -59,7 +63,7 @@ os.makedirs(output_folder, exist_ok=True)
 for filename in sorted(os.listdir(mat_folder)):
     if filename.endswith(".mat"):
         mat_path = os.path.join(mat_folder, filename)
-        print(f"\n Converting: {mat_path}")
+        print(f"\nConverting: {mat_path}")
         extract_and_save(mat_path, output_folder)
 
-print("\nAll done.")
+print("\ndone.")
