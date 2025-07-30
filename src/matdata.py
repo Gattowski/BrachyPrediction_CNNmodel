@@ -3,13 +3,21 @@ import numpy as np
 import os
 
 def dereference_cell_array(h5file, cell_array_ref):
+    """
+    Dereference a MATLAB cell array stored as object references in HDF5.
+    Returns a list of numpy arrays or scalars.
+    """
     result = []
     refs = np.array(cell_array_ref).flatten()
     for i, ref in enumerate(refs):
+        # If ref is an ndarray with single element, extract that element
         if isinstance(ref, np.ndarray):
             ref = ref[0]
         print(f"Dereferencing cell {i}: {ref}")
         data = np.array(h5file[ref])
+        # Convert to scalar if size==1
+        if data.size == 1:
+            data = data.item()
         result.append(data)
     return result
 
@@ -18,13 +26,10 @@ def extract_and_save(mat_file, output_folder):
         mask_all = np.array(f['allMasks']).astype(np.uint8)         # (Z, Y, X, N)
         seedmask_all = np.array(f['allSeedMasks']).astype(np.uint8) # (Z, Y, X, N)
 
-        # Attempt to dereference allObjFuncVals, may need adjustment if not cell array
+        # Dereference allObjFuncVals cell array
         allObjFuncVals = dereference_cell_array(f, f['allObjFuncVals'])
         print(f"allObjFuncVals type: {type(allObjFuncVals)}")
-        if hasattr(allObjFuncVals, '__len__'):
-            print(f"allObjFuncVals length: {len(allObjFuncVals)}")
-        else:
-            print("allObjFuncVals has no length attribute")
+        print(f"allObjFuncVals length: {len(allObjFuncVals)}")
 
         total_samples = mask_all.shape[-1]
         print(f"Total samples to save: {total_samples}")
@@ -33,16 +38,12 @@ def extract_and_save(mat_file, output_folder):
             mask = mask_all[:, :, :, i]
             seedmask = seedmask_all[:, :, :, i]
 
-            try:
-                objVal = allObjFuncVals[i]
-            except Exception as e:
-                print(f"Error accessing allObjFuncVals[{i}]: {e}")
-                objVal = None
+            objVal = allObjFuncVals[i]
 
             sample_data = {
                 'mask': mask,             # input
                 'seedMask': seedmask,     # binary target output
-                'objFuncVal': objVal      # objective function value
+                'objFuncVal': objVal      # scalar objective function value
             }
 
             for k, v in sample_data.items():
