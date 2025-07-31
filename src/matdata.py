@@ -3,21 +3,13 @@ import numpy as np
 import os
 
 def dereference_cell_array(h5file, cell_array_ref):
-    """
-    Dereference a MATLAB cell array stored as object references in HDF5.
-    Returns a list of numpy arrays or scalars.
-    """
     result = []
     refs = np.array(cell_array_ref).flatten()
     for i, ref in enumerate(refs):
-        # If ref is an ndarray with single element, extract that element
         if isinstance(ref, np.ndarray):
             ref = ref[0]
         print(f"Dereferencing cell {i}: {ref}")
         data = np.array(h5file[ref])
-        # Convert to scalar if size==1
-        if data.size == 1:
-            data = data.item()
         result.append(data)
     return result
 
@@ -26,28 +18,39 @@ def extract_and_save(mat_file, output_folder):
         mask_all = np.array(f['allMasks']).astype(np.uint8)         # (Z, Y, X, N)
         seedmask_all = np.array(f['allSeedMasks']).astype(np.uint8) # (Z, Y, X, N)
 
-        # Dereference allObjFuncVals cell array
         allObjFuncVals = dereference_cell_array(f, f['allObjFuncVals'])
-        print(f"allObjFuncVals type: {type(allObjFuncVals)}")
-        print(f"allObjFuncVals length: {len(allObjFuncVals)}")
 
         total_samples = mask_all.shape[-1]
-        print(f"Total samples to save: {total_samples}")
+        n_vals = len(allObjFuncVals)
+        loop_len = min(total_samples, n_vals)
 
-        for i in range(total_samples):
+        print(f"Total samples in mask_all: {total_samples}")
+        print(f"Length of allObjFuncVals: {n_vals}")
+        print(f"Looping over {loop_len} samples.")
+
+        for i in range(loop_len):
             mask = mask_all[:, :, :, i]
             seedmask = seedmask_all[:, :, :, i]
 
-            objVal = allObjFuncVals[i]
+            val = allObjFuncVals[i]
+            if isinstance(val, np.ndarray):
+                if val.size == 1:
+                    val = val.item()
+                else:
+                    val = val.flatten()[0]
+            elif isinstance(val, list):
+                if len(val) == 1:
+                    val = val[0]
+
+            objVal = val
+
+            print(f"Sample {i+1} objFuncVal: {objVal} (type: {type(objVal)})")
 
             sample_data = {
-                'mask': mask,             # input
-                'seedMask': seedmask,     # binary target output
-                'objFuncVal': objVal      # scalar objective function value
+                'mask': mask,
+                'seedMask': seedmask,
+                'objFuncVal': objVal
             }
-
-            for k, v in sample_data.items():
-                print(f"Sample {i+1} - {k}: type={type(v)}, shape={getattr(v, 'shape', None)}")
 
             base_name = os.path.splitext(os.path.basename(mat_file))[0]
             npz_name = f"{base_name}_sample{i+1}.npz"
@@ -55,6 +58,7 @@ def extract_and_save(mat_file, output_folder):
 
             np.savez_compressed(npz_path, **sample_data)
             print(f"Saved: {npz_path}")
+
 
 # === Main ===
 mat_folder = "matfiles"
